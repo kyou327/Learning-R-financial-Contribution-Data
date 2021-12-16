@@ -1,0 +1,796 @@
+ Financial Contributions for the 2020 presidential Election in Oregon
+========================================================
+### by Kevin Young
+
+
+This is an exploration of 2020 US presidential campaign donations in the state of Oregon. For this exploration data analysis, I am researching the 2020 presidential campaign finance data from [Federal Election Commission](http://fec.gov/disclosurep/PDownload.do). The dataset contains financial contribution transactions from 2016 to 2020.
+
+Throughout the analysis, I will attempt to answer the following questions:
+
+1. Which candidate received the most money?
+2. Which candidate had the most supporters?
+3. Who are those donors? What do they do?
+4. Did Bernie Sanders receive more money from men or women?
+5. What was the overall trend of donations throughout the campaigns?
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+
+library(gender)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(lubridate)
+library(RColorBrewer)
+
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+OR <- read.csv('P00000001-OR.csv', row.names = NULL)
+
+dim(OR)
+str(OR)
+
+```
+
+The data set contains 375,839 observations across 18 variables.
+
+
+# Univariate Plots
+
+From the beginning we can see there are some extreme outliers within this data.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+p1 <- ggplot(aes(x = contb_receipt_amt), data = OR) +
+  geom_histogram(bins = 50)
+p2 <- ggplot(aes(x = 1, y = contb_receipt_amt), data = OR) +
+  geom_boxplot()
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+The Contributions are in such close scale I'll need to cut down on some of the outliers to make it more readable. There are also a lot of negatives in the donations, and those won't do any good. 
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+ggplot(aes(x = contb_receipt_amt), data = OR) +
+  geom_histogram(binwidth = 0.05) + 
+  scale_x_log10() +
+  ggtitle('Histogram of Contributions')
+
+tail(sort(table(OR$contb_receipt_amt)), 5)
+summary(OR)
+
+```
+
+Scaling the amount to Log10 made it easier to identify the bulk of values, which primarily range at $100 or less.
+
+As we see in the tail the most frequent contribution amount was $25, then $50, then $100. There was a surprising amount of $27 contributions, which is an abnormal non-quartile amount.
+
+The minimum donation is such an abnormally low negative, it is likely an error, and was good to remove. There seems to be an not-insignificant number or negative outliers and high-level donation outliers.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#see what the outliers are
+sum(OR$contb_receipt_amt < 0)
+sum(OR$contb_receipt_amt >= 2800)
+
+```
+
+The negative donations are likely refunds. The donations over $2800 break personal contribution limits for the 2020 campaign cycle, so those may likely be refunds as well. So the outliers may feed into themselves. Let's omit them from the data.
+
+Let's see where these contributions are going. Since this isn't a national set of data, and the donations are much smaller in total numbers, let's narrow it to the top 10 candidates by number of contributions. 
+
+Then, let's sort them into their respective political party.
+Since the bulk of all contributions went to three candidates, I'll narrow the field to focus on Joe Biden, Donald Trump, and Bernie Sanders.
+
+I'll also use the gender package to get an estimate of contributors gender to sort into.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+tail(sort(table(OR$cand_nm)), 10)
+
+#sort into party
+democrat <- c("Bennet, Michael F.", "Biden, Joseph R Jr", "Bloomberg, Michael R.",
+              "Booker, Cory A.", "Bullock, Steve", "Buttigieg, Pete",
+              "Castro, JuliÃÂ¡n", "Delaney, John K.", "Gabbard, Tulsi",
+              "Gillibrand, Kirsten", "Gravel, Maurice Robert", "Harris, Kamala D.",
+              "Hickenlooper, John W.", "Inslee, Jay R", "Klobuchar, Amy J.",
+              "Moulton, Seth", "OÃ¢â¬â¢Rourke, Robert Beto", "Patrick, Deval",
+              "Sanders, Bernard", "Sestak, Joseph A. Jr.", "Steyer, Tom",
+              "Swalwell, Eric Michael", "Warren, Elizabeth", "Williamson, Marianne",
+              "Yang, Andrew")
+
+OR$party <- ifelse(OR$cand_nm %in% democrat, "democrat", "republican")
+OR$party[OR$cand_nm %in% c("Charles, Mark R.", "Hawkins, Howie", "Jorgensen, Jo",
+                           "Pierce, Brock", "Ryan, Timothy J." , "Walsh, Joe",
+                           "West, Kanye")] <- "others"
+
+#get their first name for predicting gender
+OR$contbr_first_nm <- sub(" .*", "", sub(".*, ", "", OR$contbr_nm))
+
+#omit the outliers from the dataset
+OR <- OR[OR$contb_receipt_amt > 0 & OR$contb_receipt_amt <= 2800, ]
+
+#adjust date
+OR$contb_receipt_dt <- as.Date(OR$contb_receipt_dt,format = "%d-%b-%y")
+
+#create the gender prediction dataframe
+gender_df <- gender(OR$contbr_first_nm, method = 'ssa', c(1920, 1997),
+                    countries = 'United States')
+
+#adding gender variable to the OR dataframe
+gender_df <- unique(gender_df)
+names(gender_df)[1] <- 'contbr_first_nm'
+OR <- inner_join(OR, gender_df, by = 'contbr_first_nm')
+
+#remove variable columns I dont need in the analysis
+drops <- c('proportion_male', 'proportion_female', 'year_min', 'year_max')
+OR <- OR[ , !(names(OR) %in% drops)]
+
+```
+
+Now there are new variables in the data set for me to work with. The party variable and the gender variable.
+
+I can now explore what the contributions look like by gender and by which party the candidates are a part of.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+# Plot total contributions by party
+party_group <- group_by(OR, party)
+
+OR.contr_by_party <- summarize(party_group,
+                               sum_party = sum(contb_receipt_amt),
+                               number_of_candidate = length(unique(cand_id)), 
+                               mean_party = sum_party/number_of_candidate, 
+                               n = n())
+
+OR.contr_by_party
+OR.contr_by_party$party <- ordered(OR.contr_by_party$party, 
+                                   levels = c('democrat', 'republican', 'others'))
+
+ggplot(aes(x = party, y = n, fill = party), data = OR.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = n),
+            data = OR.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Number of Contributions') +
+  ggtitle('Total Number of Contributions by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+  
+sum(OR.contr_by_party$n)
+
+```
+
+The total number of donations is roughly 361K individual contributions. 242K to the Democrats, 118K to the Republicans, and only 255 individual contributions to all other candidates.
+
+Since Oregon is known to be a very liberal state, this isn't surprising. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#a table of all candidates and their number of contributions
+table(OR$cand_nm)
+
+#plotted out contributions for each candidate
+ggplot(aes(x = cand_nm), data = OR) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Number of Contributions') +
+  ggtitle('Number of Contributions by Candidate')
+
+
+```
+
+Of the candidates that ran in the 2020 election, Joe Biden had the top amount, followed by Donald Trump. Bernie sanders was a close third for contributions in Oregon.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#create gender group
+gender_group <- group_by(OR, gender)
+#add dataframe gender group
+OR.contr_by_gen <- summarize(gender_group, 
+                             sum_gen = sum(contb_receipt_amt),
+                             n_gen = n())
+OR.contr_by_gen
+
+#plot the data
+ggplot(aes(x = gender, y = n_gen, fill = gender), 
+       data = OR.contr_by_gen, vjust = -0.4) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = n_gen), stat = 'identity', data = OR.contr_by_gen, vjust = -0.4) +
+  xlab('Gender') +
+  ylab('Number of Contributions') +
+  ggtitle('Number of Contributions by Gender') +
+  scale_fill_manual(values = c("pink", 'cyan'))
+
+
+```
+
+Women had the slight edge over men for donations. 
+
+Let's see who these donors are.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#Order by Occupation
+
+occupation_group <- group_by(OR, contbr_occupation)
+OR.contr_by_occu <- summarize(occupation_group, 
+                              sum_occu = sum(contb_receipt_amt), 
+                              mean_occu = mean(contb_receipt_amt), 
+                              n = n())
+
+OR.contr_by_occu <- subset(OR.contr_by_occu, contbr_occupation != "INFORMATION REQUESTED")
+OR.contr_by_occu <- head(arrange(OR.contr_by_occu,desc(n)), n = 8)
+OR.contr_by_occu$contbr_occupation <- ordered(OR.contr_by_occu$contbr_occupation, levels = c('NOT EMPLOYED', 'RETIRED', 'PHYSICIAN', 'TEACHER', 'ATTORNEY', 'ENGINEER', 'SOFTWARE ENGINEER', 'CONSULTANT'))
+
+OR.contr_by_occu
+
+ggplot(aes(x = contbr_occupation, y = n), data = OR.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  xlab('Top 8 Occupations') +
+  ylab('Number of Donors') +
+  ggtitle('Top 8 Occupations of Donors') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Interesting, there are only 8 available for the top ten occupations, so we'll order them by those 8 occupations.
+
+Not Employed People take first, followed by Retired people. The rest of the numbers are so extraordinarily low in comparison, it may seem like an outlier.
+But If we remember the Covid-19 pandemic dominated from March to November of 2020, that could answer why so many contributions were from Unemployed people.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+summary(OR$contb_receipt_dt)
+
+#date plot
+ggplot(aes(x = contb_receipt_dt), data = OR) + geom_histogram(binwidth = 30, position = position_dodge()) +
+  xlab('Date') +
+  ylab('Number of Contributions') +
+  ggtitle('Histogram of Contribution Date')
+
+
+```
+
+It's noticeable there was a huge increase in donations the year of the election, which is normal. The highest spikes in contributions are near early 2020, which is when the primaries would be ending, funneling donations to the final two candidates, and then near the end of 2020, right as November hits, which makes sense as it's right near the election date.
+
+
+# Univariate Analysis
+
+### What is the structure of your dataset?
+
+Now there are 361,373 observations, and after completing the addition of necessary variables, there are 21 variables to work with.
+
+the most useful variables I'll be comparing are:
+* cand_nm: Candidate Name
+* contbr_nm: Contributor name (for gender analysis)
+* contbr_occupation: Contributor Occupation
+* contb_receipt_amt: Contribution Amount
+* contb_receipt_dt: Contribution date
+
+### What is/are the main feature(s) of interest in your dataset?
+
+the main feature sof interest are the contribution amounts, the difference in total contribution by political party, and the spread of traits across all donors, between gender and occupation and total amount donated.
+
+### What other features in the dataset do you think will help support your \
+investigation into your feature(s) of interest?
+
+Gender, occupation, and time of the contribution may have a strong effect on the contribution amount and chosen political party.
+
+### Did you create any new variables from existing variables in the dataset?
+
+Gender, and Political Party were created from the existing data. Contributors first name is also used to create the gender prediction.
+
+### Of the features you investigated, were there any unusual distributions? \
+Did you perform any operations on the data to tidy, adjust, or change the form \
+of the data? If so, why did you do this?
+
+Contributions that were either negative or that were above the $2800 limit imposed by federal campaign law were removed from the data. 
+
+
+# Bivariate Plots
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+OR.contr_by_party
+#total contribution $$
+ggplot(aes(x = party, y = sum_party/1000, fill = party), data = OR.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_party/1000)),
+            data = OR.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Contribution Received') +
+  ggtitle('Total Contribution Amount by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+#average contribution $$
+ggplot(aes(x = party, y = mean_party/1000, fill = party), data = OR.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(mean_party/1000)),
+            data = OR.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Contribution Received') +
+  ggtitle('Average Contribution Received by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+#total contribution sums by candidate
+sort(by(OR$contb_receipt_amt, OR$cand_nm, sum))
+
+#contribution by all candidates
+ggplot(aes(x = cand_nm, y = contb_receipt_amt/1000), data = OR) + 
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Contribution Amount in thousands') +
+  ggtitle('Contribution Amount by Candidate')
+
+#total money contributions
+sum(OR$contb_receipt_amt)
+
+
+```
+
+Over 25 million dollars was in play in contributions in the 2020 Election cycle for Oregon.
+
+Joe Biden took the lion's share of these donations, followed by Donald Trump, and then Bernie Sanders in third. 
+
+Let's see if we can find more patterns in the contributions.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#boxplot the contributions
+ggplot(aes(x = party, y = contb_receipt_amt, fill = party), data = OR) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 2800)) +
+  xlab('party') +
+  ylab('Contribution Amount') +
+  ggtitle('Boxplot for Contribution Amount by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+```
+
+As we see here the most stable median is actual for candidates in "Others", likely because there were so few contributions total.
+
+Comparably, Democrats and Republicans had a very steady amount of donations across the spectrum, making it hard to narrow down. Let's try to tidy it a bit by applying the log scale.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#removing these candidates
+OR <- subset(OR, OR$cand_nm != "Charles, Mark R." &
+               OR$cand_nm != "Hawkins, Howie" &
+               OR$cand_nm != "Jorgensen, Jo" &
+               OR$cand_nm != "Pierce, Brock" &
+               OR$cand_nm != "Ryan, Timothy J." &
+               OR$cand_nm != "Walsh, Joe" & 
+               OR$cand_nm != "West, Kanye")
+
+by(OR$contb_receipt_amt, OR$party, summary)
+
+ggplot(aes(x = party, y = contb_receipt_amt, fill = party), data = OR) +
+  geom_boxplot() +
+  scale_y_log10() +
+  xlab('party') +
+  ylab('Contribution Amount') +
+  ggtitle('Boxplot for Contribution Amount(Log_10) by Party') +
+  scale_fill_manual(values = c('blue', 'red'))
+
+
+```
+
+That cleans it up a bit, so we can now see the median and quantiles of the boxplot.
+It is noticeable that there were quite a few refunds (negatives) on the republican side of the contributions.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+by(OR$contb_receipt_amt, OR$cand_nm, summary)
+
+ggplot(aes(x = cand_nm, y = contb_receipt_amt), data = OR) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Contribution Amount') +
+  ggtitle('Contribution Amount by Candidate')
+
+
+```
+
+Here is a fascinating bit. The interquartile ranges are so low for nearly all candidates. Yet, the number of plotted points are massive for the three leading candidates. They nearly come out to a straight line from the high number of individual contributions.
+
+Perhaps things will be more precise if we look at the differences within the parties.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#organize by candidate
+can_group <- group_by(OR, party, cand_nm)
+
+OR.contr_by_can <- summarize(can_group, 
+                             sum_can = sum(contb_receipt_amt), 
+                             mean_can = mean(contb_receipt_amt),
+                             n = n())
+OR.contr_by_can <- arrange(OR.contr_by_can, sum_can)
+
+OR.contr_by_can
+
+ggplot(aes(x = cand_nm, y = sum_can/1000), data = OR.contr_by_can) +
+  geom_bar(aes(fill = party), stat = 'identity') +
+  scale_y_continuous(limits = c(0, 23000)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Candidate') +
+  ylab('Contribution Received (Thousands)') +
+  ggtitle('Contribution Received by Candidate') +
+  scale_fill_manual(values = c("blue", "red"))
+
+# Create candidate_party dataframe
+can_party <- left_join(OR.contr_by_can, OR.contr_by_party, by = 'party')
+
+ggplot(aes(x = cand_nm, y = sum_can/sum_party*100), data = can_party) +
+  geom_bar(aes(fill = party), stat = 'identity') +
+  geom_text(stat='identity', aes(label = paste(round(100*sum_can/sum_party,0),'%')), 
+            size=3, data = can_party, vjust = -0.4)+
+  scale_y_continuous(limits = c(0, 100)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Candidate') +
+  ylab('Percentage of Donation') +
+  ggtitle('Percentage of Contribution Received by Candidate from their Own Party') +
+  scale_fill_manual(values = c("blue", 'red'))
+
+
+```
+
+This puts the numbers into more perspective as percentages instead of just dollar amounts. It becomes much more apparent how much of a lead in contributions Joe Biden had over Bernie Sanders, likely because of the many months of time after he was chosen as the Democratic nominee after the primaries. 
+In the Republican corner, Donald Trump took far more of a total from the contributions, as he had the nomination much earlier in the year.
+
+As there were so many candidates in the race, it will be good to narrow the pool down to just the highest-ranked candidates who pulled in the majority of their party's donations.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+top_candidate <- c("Biden, Joseph R Jr", "Sanders, Bernard", "Trump, Donald J.")
+
+top_candidate
+
+
+```
+
+We know from above that there was a roughly 8% difference in contributions between women and men. Women contributed about 15,000 more unique donations than men. 
+
+Let's see if that differs by total amount donated as well. After that, I'll explore where that money was going.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+ggplot(aes(x = gender, y = contb_receipt_amt, fill = gender), data = OR) +
+  geom_boxplot() +
+  xlab('gender') +
+  ylab('Contribution Amount') +
+  ggtitle('Contribution Amount by Gender Boxplot') +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_fill_manual(values = c("pink", 'cyan'))
+
+
+by(OR$contb_receipt_amt, OR$gender, summary)
+
+
+```
+
+It appears that while women donated more overall contributions, men had a higher mean and median donation.
+Women donated an average of $59.66, and men an average of $79.77.
+The median was only $2 more in favor of males.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+# Create gender dataframe
+gender_group <- group_by(OR, gender)
+
+OR.contr_by_gen <- summarize(gender_group, 
+                             sum_gen = sum(contb_receipt_amt),
+                             n = n())
+
+OR.contr_by_gen
+
+ggplot(aes(x = gender, y = sum_gen/1000, fill = gender), 
+       data = OR.contr_by_gen) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = sum_gen/1000), stat = 'identity', data = OR.contr_by_gen, vjust = -0.4) +
+  xlab('Gender') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Contribution Amount by Gender') +
+  scale_fill_manual(values = c("pink", 'cyan'))
+
+
+```
+
+The total contributions puts this into better perspective for the individual amounts by gender.
+While women did donate more total unique contributions, the total contributions amount donated by men was higher, by nearly 20%.
+So while less men made donations, the total the men donated was more than the total women donated.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+# Create gender_to_top_candidate dataframe for bar plot
+OR.gen_to_top_candidate <- OR %>%
+  filter(OR$cand_nm %in% top_candidate) %>%
+  group_by(cand_nm, gender) %>%
+  summarize(sum_gen_can = sum(contb_receipt_amt))
+
+OR.gen_to_top_candidate
+
+ggplot(aes(x = cand_nm, y = sum_gen_can/1000, fill = gender), 
+       data = OR.gen_to_top_candidate) +
+  geom_bar(stat = 'identity', position = position_dodge(width = 1)) +
+  xlab('Candidate') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Contribution Amount to Top Candidate by Gender') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("pink", 'cyan'))
+
+
+```
+
+The total contributions from men are noticeably higher for all candidates here. Both genders donated around 6 million dollars each to Joe Biden. 
+Bernie Sanders received nearly 40% more contributions from men than from women, which answers my previous question. 
+Donald Trump had an even starker split between genders, with males donating almost 50% more to his campaign than females.
+
+
+Earlier I plotted what jobs (occupations) the donors had, to see where the contributions were coming from. 
+Let's look at that again by exploring how much was contributed from each occupation.
+As we saw, Unemployed people had the most unique contributions. Let's see the numbers more clearly.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+OR.contr_by_occu
+
+ggplot(aes(x = contbr_occupation, y = sum_occu/1000, fill = contbr_occupation), data = OR.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_occu/1000)), data = OR.contr_by_occu, vjust = -0.4) +
+  xlab('Top 10 Occupations') +
+  ylab('Total Contribution Amount (Thousands)') +
+  ggtitle('Total Contribution Amount From Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(aes(x = contbr_occupation, y = round(mean_occu,2), fill = contbr_occupation), data = OR.contr_by_occu) + 
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(mean_occu,2)), data = OR.contr_by_occu, vjust = -0.4) +
+  xlab('Top 10 Occupations') +
+  ylab('Average Contribution Amount') +
+  ggtitle('Average Contributions From the Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+Of the 8 major occupations to measure, while Not Employed had the highest number of contributions, it had the second lowest average contribution amount. Which makes sense as money is tight and during the pandemic many were on unemployment benefits or fixed income. Teacher having the lowest average amount is understandable considering the depressed wages teachers make across the industry nation-wide. 
+The highest average donations were by Attorneys and Physicians, which makes sense as they are highly paid on average.
+
+Software Engineer and Engineer being in the middling averages was surprising, as both of those positions have a high average pay in the Pacific Northwest.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+# Create top_occupation dataframe 
+top_occu_df <- filter(OR, contbr_occupation %in% OR.contr_by_occu[['contbr_occupation']])
+
+ggplot(aes(x = contbr_occupation, y = contb_receipt_amt), data = top_occu_df) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Top 10 Occupations') +
+  ylab('Donations Amount') +
+  ggtitle('Donations Made by Top 10 Occupations')
+
+
+```
+
+Interesting how there are distinct disparities between then high and low donation amounts for Attorneys and Engineers. Not Employed and Retired have a dense enough spread to cover all levels of donations.
+
+That gap for Engineers is odd though. The data looks a lot different if you cut the limit at 2000, as that's getting near the limit. Let's look at the lower level donations, since the mean and median aren't nearly that high.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+by(top_occu_df$contb_receipt_amt, top_occu_df$contbr_occupation, summary)
+
+ggplot(aes(x = contbr_occupation, y = contb_receipt_amt), data = top_occu_df) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_cartesian(ylim = c(0, 300)) +
+  xlab('Top 10 Occu') +
+  ylab('Donations Amount') +
+  ggtitle('Donations Made by Top 10 Occu. Excluding high donations')
+
+
+```
+
+This makes more sense now. As you can see, the Attorney, Physician, and Engineer contributions skew much higher as most of them are a much larger donation number, mostly beginning above $200.
+
+All the other occupations skew lower, starting around closer to $100. 
+
+# Bivariate Analysis
+
+The Democrats took well over half of the total contributions in the state of Oregon.
+Men made a higher contribution amount than women, but overall women made more individual contributions than men. 
+The majority of contributions was made by unemployed and retired people, but the contributions made by people employed in high-wage occupations donated much larger individual sums of money.
+
+
+### Talk about some of the relationships you observed in this part of the \
+investigation. How did the feature(s) of interest vary with other features in \
+the dataset?
+
+Software Engineers didn't donate as much to the data as I would have expected, as that is an occupation that is very common in this part of the country.
+
+### Did you observe any interesting relationships between the other features \
+(not the main feature(s) of interest)?
+
+Even though Men made up a total of almost 50% more donations to the Republican party than women, I found it surprising that the total amount of contributions to the Republican party by women, was $1000 more than the entire contribution amount that went to Bernie Sanders. 252K from both genders in total to Bernie, and 253K to Republicans just from women alone. That was an unexpected find!
+
+
+### What was the strongest relationship you found?
+
+Republicans received much higher average donations than Democrats, and those donations primarily came from men.
+
+
+# Multivariate Plots
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#time frame data
+OR.top_candidate <- OR %>%
+  filter(cand_nm %in% top_candidate) %>%
+  group_by(cand_nm, contb_receipt_dt) %>%
+  summarize(n = n(), total = sum(contb_receipt_amt))
+
+ggplot(aes(x = contb_receipt_dt, y = n, color = cand_nm), data = OR.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Number of Contributions') +
+  scale_color_manual(values = c("blue", 'gold', 'red')) +
+  ggtitle('Time Series of Number of Contributions by Top Candidate')
+
+
+ggplot(aes(x = contb_receipt_dt, y = total/1000, color = cand_nm), data = OR.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Contribution Amount (Thousands)') +
+  scale_color_manual(values = c("blue", 'gold', 'red')) +
+  ggtitle('Time Series of Contribution Amount by Top Candidate')
+
+
+```
+
+Looking at the timeframe of donations, we see that mid 2020, Bernie Sanders campaign suddenly stopped receiving any donations. Not a downward trend, but just a sudden abrupt end. 
+This can be traced to the Democratic National Convention and Joe Biden clinching the nomination ticket. It looks like it took a bit of time before donations shifted to Joe Biden but they continued to rise in donation up until the election, heavily outpacing Donald Trump. This is in line with the earlier data that showed how much more money went to Democrat candidates overall than Republicans in this dataset.
+
+When we look at the Time series amount by candidate, this becomes even more evident. There is a nexus of all candidates being in the same feild of funding, but once the line for Bernie Sanders stops, the amounts donated to Joe Biden begin to climb exponentially.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#time series trend
+
+ggplot(aes(x = contb_receipt_dt, y = total, color = cand_nm), data = OR.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Contribution Amount') +
+  ggtitle('Time Series of Contribution Amount(Log_10) by Candidate') +
+  facet_wrap(~ cand_nm) +
+  scale_y_log10(limits = c(NA, 10000), breaks = waiver()) +
+  scale_color_manual(values = c("blue", 'gold', 'red')) +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+ggplot(aes(x = contb_receipt_dt, y = n, color = cand_nm), 
+       data = OR.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  scale_y_log10(limits = c(NA, 10000), breaks = waiver()) +
+  scale_color_manual(values = c("blue", 'gold', 'red')) +
+  xlab('Date') +
+  ylab('Number of Contributions(Log_10)') +
+  ggtitle('Time Series of Number of Contributions by Candidate') +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+```
+
+I find this to be rather curious, as we see Joe Bidens donations starting way back in 2017, along with Trumps. Whereas Bernie Sanders begins in 2019, which makes sense, as that's when most presidential campaigns begin, roughly 19 months before the election. Yet Joe Biden, who said [he would not consider running for President](https://www.businessinsider.com/will-biden-run-for-president-2020-2017-5), finally [announced his campaign in April 2019.](https://www.npr.org/2019/04/25/675382786/joe-biden-officially-announces-2020-presidential-run)
+The proof is in the data, and it looks like he was indeed accepting contributions to run well before ever announcing his intention.
+
+# Multivariate Analysis
+
+### Were there features that strengthened each other in terms of looking at your feature(s) of interest?
+
+The time series made it clear that as the election neared, it made a substantial impact on Joe Biden's contribution numbers. Contributions amounts soared as the election neared, once the Nomination was secured.
+
+### Were there any interesting or surprising interactions between features?
+
+At the tail end of the election, the contribution numbers remained steady for Joe Biden even as total amounts remained high. Comparatively, Donald Trump's contribution numbers began to sag, even while contributions up to the election included some very high amounts. 
+
+
+------
+
+# Final Plots and Summary
+
+
+### Total Contribution by Party
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#total by party
+ggplot(aes(x = party, y = n, fill = party), data = OR.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = n),
+            data = OR.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Number of Contributions') +
+  ggtitle('Total Number of Contributions by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+```
+
+It's clear that, at least in the state of Oregon, the Democratic party had an unrelenting advantage in gathering contributions to their campaign warchest. They took in 2/3rds of all the political donations in the state.
+
+
+### Total Contribution by Occupation
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+#occupation contribution amounts
+ggplot(aes(x = contbr_occupation, y = sum_occu/1000, fill = contbr_occupation), data = OR.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_occu/1000)), data = OR.contr_by_occu, vjust = -0.4) +
+  xlab('Top 10 Occupations') +
+  ylab('Total Contribution Amount (Thousands)') +
+  ggtitle('Total Contribution Amount From Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Occupational abnormality can't be understated in this data set, as so many people who were unemployed donated such a high total number of contributions. This would be a stand-out abnormality in any other election year, but in 2020 the Covid-19 pandemic had such a monumental change on the world that it ground our economy to a halt. It is very telling that this did not result in fewer political donations, but that suddenly unemployed people were still willing to donate over 6 million dollars to their desired candidates.
+
+
+### Time Series of Contributions
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+ggplot(aes(x = contb_receipt_dt, y = n, color = cand_nm), 
+       data = OR.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  scale_y_log10(limits = c(NA, 10000), breaks = waiver()) +
+  scale_color_manual(values = c("blue", 'gold', 'red')) +
+  xlab('Date') +
+  ylab('Number of Contributions(Log_10)') +
+  ggtitle('Time Series of Number of Contributions by Candidate') +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+```
+
+This final plot of the time series of contributions shows a few telling points. 
+* Leading up to the DNC nomination, Bernie Sanders had a fantastic 2019 in fundraising. But throughout early 2020, those high numbers declined as the Primary election drew near.
+* Joe Biden had a slower start with much lower contribution numbers, but had a linear rise throughout 2020. Once he claimed the nomination, his numbers never stopped going up.
+* Around the same time, contributions to Donald Trump's campaign begin to dither, and continued to decline slowly over the course of the year.
+
+
+------
+
+# Reflection
+
+### Difficulties
+
+It was a struggle to parse out the data and remove the ancillary candidates, as there were so many prospective candidates in the Democratic party, who ultimately didn't turn out any major contributions. Once they were removed, it was impressive to see how much money went to just the top candidates in the race.
+
+### Successes
+
+The recommendation to add gender exploration into the data set was very helpful. It was telling to discover the disparity in donation amounts between women and men. It would be even more telling to identify those donations by time series or occupation as well.
+
+It was interesting looking into where the money came from in this state. 
+
+### Conclusion
+
+This data set only reflects on the state of Oregon, but it is fascinating to see where the money comes from in these elections. It would be interesting to analyze other states, or the data from the 2016 election. 
+
+
+### Future Work
+
+There were many good points that could be explored in this dataset. One I didn't go into was using the "contbr_employer" variable to try and find correlation between the employers and the listed occupations of the donors. This could definitely be done with further exploration in this data set.
+This data is useful for analysis into who is engaged in our area, and who might be worth targeting for better political engagement in future elections. It would be very helpful to map this data by locality as well as time series to see how things changed between the last election and this election, and perhaps use a predictive model to determine how that may change.
+
